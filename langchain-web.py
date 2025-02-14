@@ -3,6 +3,7 @@ load_dotenv()
 
 import os
 from langchain_community.document_loaders import WebBaseLoader
+from langchain_community.document_loaders import PDFBaseLoader
 from langchain.chains.question_answering import load_qa_chain
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
@@ -25,15 +26,19 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 pinecone_client = pc(api_key = PINECONE_API_KEY)
 
-def load_website(url: str):
+def load_website(vectorstore, url: str):
     loader = WebBaseLoader(web_paths = [url])
     docs = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap = 50)
     splits = text_splitter.split_documents(docs)
-    return splits
+    vectorstore.add_documents(splits)
 
-def load_pdf(path: str):
-    pass
+def load_pdf(vectorstore, path: str):
+    loader = PDFBaseLoader(pdf_paths = [path])
+    docs = loader.load()
+    text_spliiter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap=50)
+    splits = text_spliiter.split_documents(docs)
+    vectorstore.add_documents(splits)
 
 def pinecone_init(embedding_model, host):
     index = pinecone_client.Index(host = host)
@@ -41,17 +46,6 @@ def pinecone_init(embedding_model, host):
     return vectorstore
 
     
-def retrieve(state: State, vectorstore):
-    retrieved_docs = vectorstore.similarity_search(state['question'])
-    return {"context": retrieved_docs}
-
-def generate(state: State, llm):
-    docs_content = "\n\n".join(doc.page_content for doc in state['context'])
-    messages = PROMPT.invoke({"question": state['question'], "context": docs_content})
-    response = llm.invoke(messages)
-    return {"answer": response.content}
-
-
 
 if __name__ == "__main__":
     website_url = "https://en.wikipedia.org/wiki/Mahabrahma"
@@ -82,8 +76,14 @@ if __name__ == "__main__":
         if question.lower() == "exit":
             print("Exiting...")
             break
+        elif question.lower() == "pdf":
+            path = input("Enter the path to the pdf: ")
+            docs = load_pdf(vectorstore, path)
+        elif question.lower() == "web":
+            url = input("Enter the url: ")
+            docs = load_website(vectorstore, url)
         docs = retriever.invoke(question)
-        response = chain.invoke(input_documents = docs, question = question)
+        response = chain.invoke({"input_documents": docs, "question": question})
         print(response["answer"])
 
 
