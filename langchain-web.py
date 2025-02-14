@@ -1,62 +1,89 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 from langchain_community.document_loaders import WebBaseLoader
+from langchain.chains.question_answering import load_qa_chain
 from langchain_core.prompts import PromptTemplate
-from langchain.docstore.document import Document
+from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain_google_genai import GoogleGenerativeAI
 
+from typing_extensions import TypedDict, List
+
 from pinecone import Pinecone as pc
-from pinecone import ServerlessSpec
 
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBF-wxgd4Fm_3sTFcAL3u-WaZQh7aLzqAM"
-os.environ["PINECONE_API_KEY"] = "pcsk_3Mwc1n_LMUVRZ6GzBwi9XzeB4Wruha3rDgghsuxRBquutiiRqpva1Miydd4SAyYTzGwekg"
+class State(TypedDict):
+    question: str
+    context: List[Document]
+    answer: str
 
-website_url = "https://en.wikipedia.org/wiki/Mahabrahma"
-pinecone_host = "https://rag-testing-m4lr6ld.svc.aped-4627-b74a.pinecone.io"
-llm_model = "models/gemini-2.0-flash-thinking-exp-01-21"
-embedding_model = "models/embedding-001"
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-pinecone_client = pc(api_key = os.getenv("PINECONE_API_KEY"))
+pinecone_client = pc(api_key = PINECONE_API_KEY)
 
-web_loader = WebBaseLoader(web_paths = "https://lilianweng.github.io/posts/2023-06-23-agent/")
-docs = web_loader.load()
-text_splitter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap = 50)
-splits = text_splitter.split_documents(docs)
+def load_website(url: str):
+    loader = WebBaseLoader(web_paths = [url])
+    docs = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap = 50)
+    splits = text_splitter.split_documents(docs)
+    return splits
 
-llm = GoogleGenerativeAI(model=llm_model, temperature=0.7, top_p=0.85)
-gemini_embeddings = GoogleGenerativeAIEmbeddings(model = embedding_model)
+def load_pdf(path: str):
+    pass
 
-if not "rag-testing" in pinecone_client.list_indexes().names():
-    pinecone_client.create_index(
-        name = "rag-testing",
-        dimension = 768,
-        metric = "cosine",
-        spec = ServerlessSpec(
+def pinecone_init(embedding_model, host):
+    index = pinecone_client.Index(host = host)
+    vectorstore = PineconeVectorStore(embedding = embedding_model, index = index)
+    return vectorstore
 
-        )
-    )
+    
+def retrieve(state: State, vectorstore):
+    retrieved_docs = vectorstore.similarity_search(state['question'])
+    return {"context": retrieved_docs}
 
-index = pinecone_client.Index(host = pinecone_host)
-vectorstore = PineconeVectorStore(embedding = gemini_embeddings, index = index)
-vectorstore.add_documents(documents=splits)
+def generate(state: State, llm):
+    docs_content = "\n\n".join(doc.page_content for doc in state['context'])
+    messages = PROMPT.invoke({"question": state['question'], "context": docs_content})
+    response = llm.invoke(messages)
+    return {"answer": response.content}
 
-prompt_template = """You are an assistant for question answering tasks.
-Use only the given context to answer the question.
-If you don't know the answer just say I don't know.
-Be detailed in your answers.
 
-Question: {question}
-Context: {context}
-Answer: """
 
-prompt = PromptTemplate.from_template(prompt_template)
+if __name__ == "__main__":
+    website_url = "https://en.wikipedia.org/wiki/Mahabrahma"
+    pinecone_host = "https://rag-testing-m4lr6ld.svc.aped-4627-b74a.pinecone.io"
+    llm_model = "models/gemini-2.0-flash-thinking-exp-01-21"
+    embedding_model = "models/embedding-001"
 
-question = "What is gemini?"
-retrieved_docs = vectorstore.similarity_search(question, k=5)
-docs_content = "\n\n".join(doc.page_content for doc in retrieved_docs)
-prompt = prompt.invoke({"question": question, "context": docs_content} )
+    llm = GoogleGenerativeAI(model=llm_model, temperature=0.7, top_p=0.85)
+    gemini_embeddings = GoogleGenerativeAIEmbeddings(model = embedding_model)
 
-response = llm.generate([prompt.text])
-print(response[0].text)
+    prompt_template = """You are an assistant for question answering tasks.
+    Use only the given context to answer the question.
+    If you don't know the answer just say I don't know.
+    Use a maximum of 3 sentences to answer the question.
+
+    Question: {input}
+    Context: {context}
+    Answer: """
+
+    PROMPT = PromptTemplate.from_template(prompt_template)
+
+    vectorstore = pinecone_init(gemini_embeddings, pinecone_host)
+    retriever = vectorstore.as_retriever()
+    chain = load_qa_chain(llm, chain_type="stuff")
+
+    while True:
+        question = input("Enter your question: ")
+        if question.lower() == "exit":
+            print("Exiting...")
+            break
+        docs = retriever.invoke(question)
+        response = chain.invoke(input_documents = docs, question = question)
+        print(response["answer"])
+
+
