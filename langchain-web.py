@@ -42,7 +42,13 @@ def load_pdf(vectorstore, path: str):
     splits = text_spliiter.split_documents(docs)
     vectorstore.add_documents(splits)
 
+store = {}
 
+def get_session_history(session_id: str):
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+        
+    return store[session_id]
 
     
 
@@ -52,7 +58,7 @@ if __name__ == "__main__":
     llm_model = "models/gemini-2.0-flash-thinking-exp-01-21"
     embedding_model = "models/embedding-001"
 
-    llm = GoogleGenerativeAI(model=llm_model, temperature=0.7, top_p=0.85)
+    llm = GoogleGenerativeAI(model=llm_model, temperature=0.4, top_p=0.85)
     gemini_embeddings = GoogleGenerativeAIEmbeddings(model = embedding_model)
     vectorstore = pinecone_init(gemini_embeddings, pinecone_host)
     store_retriever = vectorstore.as_retriever()
@@ -90,7 +96,13 @@ if __name__ == "__main__":
     qa_chain = create_stuff_documents_chain(llm , prompt)
     rag_chain = create_retrieval_chain(histry_aware_retriever, qa_chain)
     
-
+    final_chain = RunnableWithMessageHistory(
+        rag_chain, 
+        get_session_history, 
+        input_messages_key="input", 
+        history_messages_key="chat_history",
+        output_messages_key="answer",
+    )
 
     while True:
         question = input("Enter your question: ")
@@ -103,7 +115,13 @@ if __name__ == "__main__":
         elif question.lower() == "web":
             url = input("Enter the url: ")
             docs = load_website(vectorstore, url)
-        response = chain.invoke({"input_documents": docs, "question": question})
-        print(response)
+        
+        result = final_chain.invoke(
+            {"input": question},
+            config = {
+                "configurable": {"session_id": "test"}
+            },
+        )['answer']
+        print(result)
 
 
